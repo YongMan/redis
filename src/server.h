@@ -1199,6 +1199,7 @@ struct redisServer {
     int watchdog_period;  /* Software watchdog period in ms. 0 = off */
     /* System hardware info */
     size_t system_memory_size;  /* Total memory in system as reported by OS */
+    size_t system_memory_used;  /* Cached memory read from /proc/meminfo, backgroup process memory limit */
 
     /* Mutexes used to protect atomic variables when atomic builtins are
      * not available. */

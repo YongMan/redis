@@ -933,6 +933,47 @@ void updateCachedTime(void) {
     server.mstime = mstime();
 }
 
+static size_t calculate_used_memory(void) {
+    /* We don't have to fear extremely long
+    * lines since the kernel will not generate them.
+    */
+    #define LINE_LEN 256
+    FILE *fp;
+    char str[LINE_LEN];
+    size_t mem_cached,mem_free,mem_buff;
+    size_t mem_used;
+    mem_cached = 0;
+    mem_free = 0;
+    mem_buff = 0;
+    if((fp = fopen("/proc/meminfo","rt")) == NULL) {
+        serverLog(LL_WARNING, "/proc/meminfo open failed, %s", strerror(errno));
+        return 0;
+    }
+    while(1) {
+        if (fgets(str, LINE_LEN, fp) == NULL) {
+            serverLog(LL_WARNING, "read from /proc/meminfo failed, %s", strerror(errno));
+            return 0;
+        }
+        if (!strncmp(str, "Cached:", strlen("Cached:"))) {
+            mem_cached = atoi(str + strlen("Cached:"));
+        } else if (!strncmp(str, "MemFree:", strlen("MemFree:"))) {
+            mem_free = atoi(str + strlen("MemFree:"));
+        } else if (!strncmp(str, "Buffers:", strlen("Buffers:"))) {
+            mem_buff = atoi(str + strlen("Buffers:"));
+        } else if (!strncmp(str, "SwapCached:", strlen("SwapCached:")))
+            break;
+    }
+
+    fclose(fp);
+
+    mem_used = server.system_memory_size;
+    if (mem_used > mem_cached) mem_used -= mem_cached * 1024;
+    if (mem_used > mem_free) mem_used -= mem_free * 1024;
+    if (mem_used > mem_buff) mem_used -= mem_buff * 1024;
+
+    return mem_used;
+}
+
 /* This is our timer interrupt, called server.hz times per second.
  * Here is where we do a number of things that need to be done asynchronously.
  * For instance:
@@ -1076,6 +1117,14 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             }
             updateDictResizePolicy();
             closeChildInfoPipe();
+
+            /* reset used memory */
+            server.system_memory_used = 0;
+        }
+
+        /* update used memory from operation system */
+        run_with_period(100) {
+            server.system_memory_used = calculate_used_memory();
         }
     } else {
         /* If there is not a background saving/rewrite in progress check if
@@ -2429,6 +2478,22 @@ int processCommand(client *c) {
                 "-MISCONF Errors writing to the AOF file: %s\r\n",
                 strerror(server.aof_last_write_errno)));
         return C_OK;
+    }
+
+    /* Don't accept write commands if a forked process doing bgsave, and memory
+     * usage above 90% */
+    if (server.rdb_child_pid != -1 || server.aof_child_pid != -1) {
+        float perc;
+
+        perc = (float)server.system_memory_used/(float)server.system_memory_size;
+
+        if (perc > 0.9 && c->cmd->flags & CMD_WRITE) {
+            addReplySds(c,
+                sdscatprintf(sdsempty(),
+                "-MISCONF Errors writing because of lacking memory for background process(%.2f)\r\n",
+                perc));
+            return C_OK;
+        }
     }
 
     /* Don't accept write commands if there are not enough good slaves and
