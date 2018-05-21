@@ -738,6 +738,12 @@ void loadServerConfigFromString(char *config) {
                 err = sentinelHandleConfiguration(argv+1,argc-1);
                 if (err) goto loaderr;
             }
+        } else if (!strcasecmp(argv[0], "cow-memory-limit") && argc == 2) {
+            server.cow_memory_limit = atoi(argv[1]);
+            if (server.cow_memory_limit <= 0 || server.cow_memory_limit > 100) {
+                err = "cow_memory_limit must be a percentage (0,100]";
+                goto loaderr;
+            }
         } else {
             err = "Bad directive or wrong number of arguments"; goto loaderr;
         }
@@ -1136,6 +1142,8 @@ void configSetCommand(client *c) {
             enableWatchdog(ll);
         else
             disableWatchdog();
+    } config_set_numerical_field(
+      "cow-memory-limit", server.cow_memory_limit,1,100) {
 
     /* Memory fields.
      * config_set_memory_field(name,var) */
@@ -1297,6 +1305,7 @@ void configGetCommand(client *c) {
     config_get_numerical_field("cluster-slave-validity-factor",server.cluster_slave_validity_factor);
     config_get_numerical_field("repl-diskless-sync-delay",server.repl_diskless_sync_delay);
     config_get_numerical_field("tcp-keepalive",server.tcpkeepalive);
+    config_get_numerical_field("cow-memory-limit",server.cow_memory_limit);
 
     /* Bool (yes/no) values */
     config_get_bool_field("cluster-require-full-coverage",
@@ -2064,6 +2073,7 @@ int rewriteConfig(char *path) {
     rewriteConfigYesNoOption(state,"lazyfree-lazy-expire",server.lazyfree_lazy_expire,CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE);
     rewriteConfigYesNoOption(state,"lazyfree-lazy-server-del",server.lazyfree_lazy_server_del,CONFIG_DEFAULT_LAZYFREE_LAZY_SERVER_DEL);
     rewriteConfigYesNoOption(state,"slave-lazy-flush",server.repl_slave_lazy_flush,CONFIG_DEFAULT_SLAVE_LAZY_FLUSH);
+    rewriteConfigNumericalOption(state,"cow-memory-limit",server.cow_memory_limit,CONFIG_DEFAULT_COW_MEMORY_LIMIT);
 
     /* Rewrite Sentinel config if in Sentinel mode. */
     if (server.sentinel_mode) rewriteConfigSentinelOption(state);

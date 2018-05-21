@@ -1495,6 +1495,7 @@ void initServerConfig(void) {
     server.lazyfree_lazy_server_del = CONFIG_DEFAULT_LAZYFREE_LAZY_SERVER_DEL;
     server.always_show_logo = CONFIG_DEFAULT_ALWAYS_SHOW_LOGO;
     server.lua_time_limit = LUA_SCRIPT_TIME_LIMIT;
+    server.cow_memory_limit = CONFIG_DEFAULT_COW_MEMORY_LIMIT;
 
     unsigned int lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
@@ -2487,7 +2488,7 @@ int processCommand(client *c) {
 
         perc = (float)server.system_memory_used/(float)server.system_memory_size;
 
-        if (perc > 0.9 && c->cmd->flags & CMD_WRITE) {
+        if (perc > (float)server.cow_memory_limit/100.0  && c->cmd->flags & CMD_WRITE) {
             addReplySds(c,
                 sdscatprintf(sdsempty(),
                 "-MISCONF Errors writing because of lacking memory for background process(%.2f)\r\n",
