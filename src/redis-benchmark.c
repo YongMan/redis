@@ -65,6 +65,7 @@ static struct config {
     int randomkeys_keyspacelen;
     int keepalive;
     int pipeline;
+    int txn;
     int showerrors;
     long long start;
     long long totlatency;
@@ -95,6 +96,7 @@ typedef struct _client {
                                such as auth and select are prefixed to the pipeline of
                                benchmark commands and discarded after the first send. */
     int prefixlen;          /* Size in bytes of the pending prefix commands */
+    int ignore;
 } *client;
 
 /* Prototypes */
@@ -151,7 +153,12 @@ static void resetClient(client c) {
     aeDeleteFileEvent(config.el,c->context->fd,AE_READABLE);
     aeCreateFileEvent(config.el,c->context->fd,AE_WRITABLE,writeHandler,c);
     c->written = 0;
-    c->pending = config.pipeline;
+    if (config.txn == 0) {
+        c->pending = config.pipeline;
+    } else {
+        c->pending = config.txn + 2;
+        c->ignore = 2;
+    }
 }
 
 static void randomizeClientKey(client c) {
@@ -239,6 +246,15 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                         c->prefixlen = 0;
                     }
                     continue;
+                }
+
+                if (config.txn > 0) {
+                    if (c->ignore > 0) {
+                        c->pending--;
+                        c->ignore--;
+                        // eat multi and exec command reply
+                        continue;
+                    }
                 }
 
                 if (config.requests_finished < config.requests)
@@ -333,6 +349,7 @@ static client createClient(char *cmd, size_t len, client from) {
     /* Suppress hiredis cleanup of unused buffers for max speed. */
     c->context->reader->maxbuf = 0;
 
+    c->ignore = 2;
     /* Build the request buffer:
      * Queue N requests accordingly to the pipeline size, or simply clone
      * the example client buffer. */
@@ -364,13 +381,34 @@ static client createClient(char *cmd, size_t len, client from) {
         c->obuf = sdscatlen(c->obuf,
             from->obuf+from->prefixlen,
             sdslen(from->obuf)-from->prefixlen);
+        if (config.pipeline > 1) {
+            c->pending = config.pipeline+c->prefix_pending;
+        } else if (config.txn > 0) {
+            c->pending = config.txn+c->prefix_pending + 2;
+        } else {
+            c->pending = config.pipeline+c->prefix_pending;
+        }
     } else {
-        for (j = 0; j < config.pipeline; j++)
+        if (config.pipeline > 1) {
+            c->pending = config.pipeline+c->prefix_pending;
+            for (j = 0; j < config.pipeline; j++)
+                c->obuf = sdscatlen(c->obuf,cmd,len);
+        } else if (config.txn > 0) {
+            /* Append multi command. */
+            c->obuf = sdscatprintf(c->obuf,"*1\r\n$5\r\nMULTI\r\n");
+            for (j = 0; j < config.txn; j++)
+                c->obuf = sdscatlen(c->obuf,cmd,len);
+            /* Append exec command */
+            c->obuf = sdscatprintf(c->obuf,"*1\r\n$4\r\nEXEC\r\n");
+
+            c->pending = config.txn+c->prefix_pending + 2;
+        } else {
             c->obuf = sdscatlen(c->obuf,cmd,len);
+            c->pending = config.pipeline+c->prefix_pending;
+        }
     }
 
     c->written = 0;
-    c->pending = config.pipeline+c->prefix_pending;
     c->randptr = NULL;
     c->randlen = 0;
 
@@ -515,6 +553,10 @@ int parseOptions(int argc, const char **argv) {
             if (lastarg) goto invalid;
             config.pipeline = atoi(argv[++i]);
             if (config.pipeline <= 0) config.pipeline=1;
+        } else if (!strcmp(argv[i],"-T")) {
+            if (lastarg) goto invalid;
+            config.txn = atoi(argv[++i]);
+            if (config.txn < 0) config.txn=0;
         } else if (!strcmp(argv[i],"-r")) {
             if (lastarg) goto invalid;
             config.randomkeys = 1;
@@ -590,6 +632,7 @@ usage:
 " -t <tests>         Only run the comma separated list of tests. The test\n"
 "                    names are the same as the ones produced as output.\n"
 " -I                 Idle mode. Just open N idle connections and wait.\n\n"
+" -T <numreq>        Transaction <numreq> requests. Default no exec."
 "Examples:\n\n"
 " Run the benchmark with the default configuration against 127.0.0.1:6379:\n"
 "   $ redis-benchmark\n\n"
@@ -679,6 +722,7 @@ int main(int argc, const char **argv) {
     config.tests = NULL;
     config.dbnum = 0;
     config.auth = NULL;
+    config.txn = 0;
 
     i = parseOptions(argc,argv);
     argc -= i;
